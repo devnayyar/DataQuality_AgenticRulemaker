@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  # Batch processor (runs once, exits)
+  batch-processor:
+    build: .
+    container_name: agentic-dq-batch
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - EMAIL_SENDER=${EMAIL_SENDER}
+      - EMAIL_PASSWORD=${EMAIL_PASSWORD}
+      - EMAIL_RECIPIENTS=${EMAIL_RECIPIENTS}
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    command: python jobs/batch_runner.py
+    profiles:
+      - batch
+
+  # Streamlit HITL UI
+  hitl-ui:
+    build: .
+    container_name: agentic-dq-hitl
+    environment:
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - EMAIL_SENDER=${EMAIL_SENDER}
+      - EMAIL_PASSWORD=${EMAIL_PASSWORD}
+      - EMAIL_RECIPIENTS=${EMAIL_RECIPIENTS}
+      - STREAMLIT_SERVER_PORT=8501
+      - STREAMLIT_SERVER_ADDRESS=0.0.0.0
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./pending_reviews.json:/app/pending_reviews.json
+    command: streamlit run hitl/app.py
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
