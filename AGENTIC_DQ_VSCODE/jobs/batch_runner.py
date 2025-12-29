@@ -16,7 +16,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from workflow.state_machine import build_workflow
 from config.settings import BRONZE_DIR
 from ingestion.registry import load_registry, register_table
-from hitl.controller import _load_reviews
+from hitl.controller import _load_reviews, submit_review
 
 
 # -------------------------------------------------
@@ -156,6 +156,42 @@ def run_batch(max_files: int = None):
                 f"✅ Completed {table_name}. "
                 f"Metrics: {result.get('metrics')}"
             )
+            
+            # Save results back to the HITL session for UI display
+            if result.get("hitl_session_id"):
+                try:
+                    # Load current session
+                    pending_reviews = _load_reviews()
+                    sess = pending_reviews.get(result["hitl_session_id"], {})
+                    
+                    # Add results to session
+                    sess["results"] = {
+                        "metrics": result.get("metrics", {}),
+                        "score": result.get("score", 0)
+                    }
+                    sess["status"] = "completed"
+                    
+                    logger.info(f"📊 Results to save: {sess['results']}")
+                    
+                    # Save back to file
+                    pending_reviews[result["hitl_session_id"]] = sess
+                    with open("pending_reviews.json", "w") as f:
+                        json.dump(pending_reviews, f, indent=2, default=str)
+                    
+                    logger.info(f"✅ Saved results to HITL session {result['hitl_session_id']}")
+                    logger.info(f"📁 pending_reviews.json updated successfully")
+                    
+                    # Verify it was saved
+                    verify = _load_reviews()
+                    verify_sess = verify.get(result["hitl_session_id"], {})
+                    logger.info(f"✓ Verification - Session status: {verify_sess.get('status')}")
+                    logger.info(f"✓ Verification - Has results: {bool(verify_sess.get('results'))}")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Failed to save results to session: {e}", exc_info=True)
+            else:
+                logger.warning("⚠️ No HITL session ID found in result")
+            
             processed_count += 1
 
         except Exception as e:

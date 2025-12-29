@@ -194,16 +194,24 @@ def generate_general_rules(schema: str, profile: dict, pii_fields: list = None, 
     .notnull(), .isnull(), .isin(), .str.contains(), .str.len(), .astype(), 
     pd.to_datetime(), .quantile(), .between(), .abs(), .duplicated()
     
-    DO NOT use modulo (%), division, or mathematical operators on string columns.
-    DO NOT validate date format on PII fields - they will be masked.
+    CRITICAL RULES TO AVOID ERRORS:
+    - DO NOT use incomplete regex patterns (always complete the pattern)
+    - DO NOT use "&" operator without parentheses: Use "(a) & (b)" not "a & b"
+    - DO NOT mix operators without proper precedence: Use parentheses around each condition
+    - DO NOT validate non-existent columns
+    - DO NOT use modulo (%), division, or mathematical operators on string columns
+    - DO NOT validate date format on PII fields - they will be masked
+    - DO NOT create rules that pass 100% or fail 100% of records (they indicate bugs)
     
     Schema: {schema}
     Profile: {profile}
     Previously approved rules: {past_rules}
     
     REQUIREMENTS:
-    - Each rule must be a valid Pandas boolean expression
+    - Each rule must be a valid Pandas boolean expression returning a Series[bool]
+    - ALL operators MUST have parentheses: "(df['a'] > 0) & (df['b'].notnull())"
     - Rules must work on transformed (non-PII) data
+    - Rules should pass 5-95% of records (not 0% or 100%)
     - Avoid duplicate logic from past rules
     - Return ONLY valid JSON (no markdown, no code blocks):
     {{
@@ -215,13 +223,18 @@ def generate_general_rules(schema: str, profile: dict, pii_fields: list = None, 
         "model_name": "gemini-2.5-flash"
     }}
     
-    EXAMPLES:
-    - "df['amount'].notnull() & (df['amount'] > 0)"
+    CORRECT EXAMPLES (all with proper parentheses):
+    - "(df['amount'].notnull()) & (df['amount'] > 0)"
     - "df['status'].isin(['active', 'inactive', 'pending'])"
-    - "(df['qty'] > 0) == (df['amount'] > 0)" # Logical consistency
-    - "df['name'].str.len() > 2"
-    - "~df.duplicated(subset=['order_id'], keep=False)"
-    - "df['quantity'].between(0, 1000)"
+    - "((df['qty'] > 0) == (df['amount'] > 0))"
+    - "(df['name'].str.len() > 2)"
+    - "(~df.duplicated(subset=['order_id'], keep=False))"
+    - "(df['quantity'].between(0, 1000))"
+    
+    INCORRECT EXAMPLES (what NOT to do):
+    - "df['ASIN'].str.len() == 10 & df['ASIN'].str.contains(...)" (MISSING parentheses, incomplete regex)
+    - "df['amount'] > 0 & df['amount'] < 1000" (MISSING parentheses)
+    - "df['date'].str.contains('20\\d{2}')" (Incomplete escape sequence)
     """
     
     try:

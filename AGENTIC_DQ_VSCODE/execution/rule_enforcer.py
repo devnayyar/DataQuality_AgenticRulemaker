@@ -268,6 +268,9 @@ def apply_rules_with_pii_transformation(
         mask = pd.Series([True] * len(df_transformed), index=df_transformed.index)
         failed_rules = []
         
+        # Track which rules each row failed
+        rule_failures = {i: [] for i in df_transformed.index}
+        
         logger.info(f"Evaluating {len(general_rules)} general rule(s)")
         
         for idx, rule in enumerate(general_rules):
@@ -281,6 +284,12 @@ def apply_rules_with_pii_transformation(
                     failed_rules.append({"index": idx, "rule": rule, "error": "Did not return boolean"})
                     continue
                 
+                # Track which rows failed this rule
+                if isinstance(rule_mask, pd.Series):
+                    failed_rows = df_transformed[~rule_mask].index
+                    for row_idx in failed_rows:
+                        rule_failures[row_idx].append(f"Rule_{idx+1}")
+                
                 mask = mask & rule_mask
                 logger.debug(f"Rule {idx} applied: {rule[:60]}")
                 
@@ -292,6 +301,11 @@ def apply_rules_with_pii_transformation(
         # Partition data
         clean = df_transformed[mask]
         bad = df_transformed[~df_transformed.index.isin(clean.index)]
+        
+        # Add Failed_Rules column to bad data showing which rules failed
+        if len(bad) > 0:
+            bad = bad.copy()
+            bad['Failed_Rules'] = bad.index.map(lambda i: '; '.join(rule_failures.get(i, ['Unknown'])))
         
         passed_count = len(clean)
         failed_count = len(bad)
@@ -325,12 +339,20 @@ def apply_rules_with_pii_transformation(
             "error": f"Failed to save partitions: {str(e)}"
         }
     
+    # Calculate rule failure statistics
+    rule_failure_counts = {}
+    if len(bad) > 0 and 'Failed_Rules' in bad.columns:
+        for failed_rules_str in bad['Failed_Rules']:
+            for rule_name in failed_rules_str.split('; '):
+                rule_failure_counts[rule_name] = rule_failure_counts.get(rule_name, 0) + 1
+    
     return {
         "total": len(df_transformed),
         "passed": passed_count,
         "failed": failed_count,
         "pass_rate": pass_rate,
         "failed_rules": failed_rules,
+        "rule_failure_counts": rule_failure_counts,
         "message": "Processing complete with PII transformations applied"
     }
     raise

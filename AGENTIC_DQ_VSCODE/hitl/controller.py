@@ -16,6 +16,67 @@ logger = logging.getLogger(__name__)
 REVIEW_FILE = "pending_reviews.json"
 
 
+def _transform_profile_for_ui(profile: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Transform profile data from profiler format to UI format.
+    
+    Handles both old format (with row_count, null_rates, etc.) 
+    and new format (with total_rows, column_stats, etc.).
+    
+    Args:
+        profile: Raw profile from profiler
+        
+    Returns:
+        Profile formatted for UI consumption
+    """
+    # If already in new format, return as-is
+    if "total_rows" in profile and "column_stats" in profile:
+        return profile
+    
+    # Transform from old format
+    transformed = {
+        "total_rows": profile.get("row_count", 0),
+        "total_columns": len(profile.get("data_types", {})),
+        "pii_fields": profile.get("pii_fields", []),
+        "column_stats": {}
+    }
+    
+    # Build column stats from old format
+    data_types = profile.get("data_types", {})
+    null_rates = profile.get("null_rates", {})
+    uniqueness = profile.get("uniqueness", {})
+    min_max = profile.get("min_max", {})
+    
+    for col_name, dtype in data_types.items():
+        total_rows = transformed["total_rows"]
+        null_rate = null_rates.get(col_name, 0)
+        unique_rate = uniqueness.get(col_name, 0)
+        
+        col_stats = {
+            "dtype": str(dtype),
+            "non_null": int(total_rows * (1 - null_rate)) if total_rows > 0 else 0,
+            "missing": int(total_rows * null_rate) if total_rows > 0 else 0,
+            "missing_pct": float(null_rate * 100),
+            "unique": int(total_rows * unique_rate) if total_rows > 0 else 0,
+            "duplicate_count": int(total_rows - (total_rows * unique_rate)) if total_rows > 0 else 0,
+            "sample_values": []
+        }
+        
+        # Add numeric stats if applicable
+        if col_name in min_max and "min" in min_max[col_name]:
+            col_stats["min"] = float(min_max[col_name].get("min", 0))
+            col_stats["max"] = float(min_max[col_name].get("max", 0))
+            col_stats["mean"] = None  # Not in old format
+            col_stats["median"] = None  # Not in old format
+        
+        transformed["column_stats"][col_name] = col_stats
+    
+    # Keep original profile too for completeness
+    transformed["_raw"] = profile
+    
+    return transformed
+
+
 def _load_reviews() -> Dict[str, Any]:
     """
     Load reviews from the persistent JSON file.
@@ -34,6 +95,12 @@ def _load_reviews() -> Dict[str, Any]:
                 logger.debug(f"Review file {REVIEW_FILE} is empty, starting fresh")
                 return {}
             data = json.loads(content)
+            
+            # Transform all profiles to UI format on load
+            for sid, sess in data.items():
+                if "profile" in sess:
+                    sess["profile"] = _transform_profile_for_ui(sess["profile"])
+            
             logger.debug(f"Loaded {len(data)} review sessions from {REVIEW_FILE}")
             return data
     except json.JSONDecodeError as e:
@@ -148,7 +215,9 @@ def create_review(
     table_name: str, 
     rules: List[str], 
     profile: Dict[str, Any], 
-    sample: List[Dict[str, Any]]
+    sample: List[Dict[str, Any]],
+    preview_after: List[Dict[str, Any]] = None,
+    preview_failed_rules: Dict[str, Any] = None
 ) -> Optional[str]:
     """
     Create a new review session and save it to the file.
@@ -157,7 +226,9 @@ def create_review(
         table_name: Name of the table being reviewed
         rules: List of rule expressions
         profile: Statistical profile of the data
-        sample: Sample rows from the table
+        sample: Sample rows from the table (BEFORE transformation)
+        preview_after: Sample rows AFTER PII transformation (optional)
+        preview_failed_rules: Rules that fail on preview data (optional)
         
     Returns:
         Session ID if successful, None if failed
@@ -172,11 +243,18 @@ def create_review(
     
     try:
         sid = str(uuid.uuid4())
+        
+        # Transform profile to UI format
+        ui_profile = _transform_profile_for_ui(profile)
+        
         _pending_reviews[sid] = {
             "table": table_name,
             "rules": rules,
-            "profile": profile,
+            "profile": ui_profile,
             "sample": sample,
+            "preview_before": sample,  # Store as before
+            "preview_after": preview_after or sample,  # Store after-transformation preview
+            "preview_failed_rules": preview_failed_rules or {},  # Rule impact preview
             "status": "pending",
             "created": datetime.now().isoformat()
         }
